@@ -1,42 +1,34 @@
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, File, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
-from backend.gemma_runner import transcribe_and_analyze
-from backend.audio_tools import convert_webm_to_wav, preprocess_audio
-import shutil
-import uuid
-import os
+from pydantic import BaseModel
+from backend.audio_tools import transcribe_audio
+from backend.gemma_runner import run_gemma_query
 
 app = FastAPI()
 
-# CORS configuration (allow Tauri frontend to access backend)
+# Allow frontend access
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # ⚠️ Lock this down in production
-    allow_credentials=True,
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+class TextRequest(BaseModel):
+    text: str
+    history: list = []
+
+@app.post("/analyze-text/")
+async def analyze_text(req: TextRequest):
+    response = run_gemma_query(req.text, req.history)
+    return {"response": response}
+
 @app.post("/analyze-audio/")
 async def analyze_audio(file: UploadFile = File(...)):
-    temp_ext = os.path.splitext(file.filename)[1] or ".webm"
-    temp_input = f"temp_{uuid.uuid4().hex}{temp_ext}"
-    with open(temp_input, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+    temp_path = f"temp_{file.filename}"
+    with open(temp_path, "wb") as f:
+        f.write(await file.read())
 
-    # Convert if needed
-    if temp_input.endswith(".webm"):
-        wav_file = convert_webm_to_wav(temp_input)
-        os.remove(temp_input)
-    else:
-        wav_file = temp_input
-
-    # Preprocess
-    processed_file = preprocess_audio(wav_file)
-    os.remove(wav_file)
-
-    try:
-        result = transcribe_and_analyze(processed_file)
-        return {"result": result}
-    finally:
-        os.remove(processed_file)
+    transcript = transcribe_audio(temp_path)
+    response = run_gemma_query(transcript)
+    return {"transcription": transcript, "response": response}
